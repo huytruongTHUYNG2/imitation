@@ -12,12 +12,14 @@ from imitation.rewards.reward_nets import BasicRewardNet
 from imitation.util.networks import RunningNorm
 from imitation.util.util import make_vec_env
 
+from wgail import WGAIL
+
 import seals
 
 rng = np.random.default_rng(0)
 
 env = gym.make("seals/CartPole-v0")
-expert = PPO(policy=MlpPolicy, env=env, n_steps=64)
+expert = PPO(policy=MlpPolicy, env=env, n_steps=64, seed=2)
 expert.learn(1000)
 
 rollouts = rollout.rollout(
@@ -38,7 +40,25 @@ reward_net = BasicRewardNet(
     venv.action_space,
     normalize_input_layer=RunningNorm,
 )
-gail_trainer = GAIL(
+
+# GAIL #################################################################################################################
+# gail_trainer = GAIL(
+#     demonstrations=rollouts,
+#     demo_batch_size=1024,
+#     gen_replay_buffer_capacity=2048,
+#     n_disc_updates_per_round=4,
+#     venv=venv,
+#     gen_algo=learner,
+#     reward_net=reward_net,
+# )
+#
+# gail_trainer.train(20000)
+# rewards, _ = evaluate_policy(learner, venv, 100, return_episode_rewards=True)
+# print("GAIL Rewards:", rewards)
+
+
+# WGAIL ################################################################################################################
+wgail_trainer = WGAIL(
     demonstrations=rollouts,
     demo_batch_size=1024,
     gen_replay_buffer_capacity=2048,
@@ -48,6 +68,8 @@ gail_trainer = GAIL(
     reward_net=reward_net,
 )
 
-gail_trainer.train(20000)
+wgail_trainer.train(300000)
 rewards, _ = evaluate_policy(learner, venv, 100, return_episode_rewards=True)
-print("Rewards:", rewards)
+print("WGAIL Rewards:", rewards)
+
+
