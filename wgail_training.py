@@ -6,6 +6,7 @@ import os
 from typing import Callable, Mapping, Optional, Sequence, Tuple, Type
 
 import numpy as np
+import torch
 import torch as th
 import torch.utils.tensorboard as thboard
 import tqdm
@@ -124,7 +125,7 @@ class WGAN_AdversarialTrainer(base.DemonstrationAlgorithm[types.Transitions]):
         return self.gen_algo.policy
 
     @abc.abstractmethod
-    def score_expert_is_high(
+    def score_expert_is_positive(
         self,
         state: th.Tensor,
         action: th.Tensor,
@@ -182,33 +183,43 @@ class WGAN_AdversarialTrainer(base.DemonstrationAlgorithm[types.Transitions]):
             # optionally write TB summaries for collected ops
             write_summaries = self._init_tensorboard and self._global_step % 20 == 0
 
+            # TODO: parameter clipping for discriminator
+            # clamp discriminator parameters to a range [-c, c] to avoid weight explosion
+            # c = 0.01
+            # for p in self._reward_net.parameters():
+            #     p.data.clamp_(-c, c)
+
             # compute loss
             batch = self._make_disc_train_batch(
                 gen_samples=gen_samples,
                 expert_samples=expert_samples,
             )
-            disc_score = self.score_expert_is_high(
+            disc_score = self.score_expert_is_positive(
                 batch["state"],
                 batch["action"],
                 batch["next_state"],
                 batch["done"],
                 batch["log_policy_act_prob"],
             )
-            loss = disc_score * batch["score_expert_is_positive"].float()
+            import warnings
+            warnings.warn(f"Discriminator score: {disc_score}\n"
+                          f"First part should be positive, last part should be negative.")
+            # flip sign because loss minimization
+            grad = -batch["score_expert_is_positive"].float()
 
-            print(disc_score)
+            loss = disc_score
 
-            print(loss)
-
-            print(loss.mean())
-
-            #TODO: parameter clipping for discriminator
-            #TODO: generator loss change
-            #TODO: gradient penalty
+            # TODO: generator loss change
+            # TODO: gradient penalty
 
             # do gradient step
             self._disc_opt.zero_grad()
-            loss.mean().backward()
+            # find the dividing index between expert data and learner data
+            ind = int(loss.shape[0] / 2)
+            # loss for expert data
+            loss[:ind].backward(gradient=grad[:ind], retain_graph=True)
+            # loss for learner data
+            loss[ind:].backward(gradient=grad[ind:])
             self._disc_opt.step()
             self._disc_step += 1
 
@@ -233,18 +244,6 @@ class WGAN_AdversarialTrainer(base.DemonstrationAlgorithm[types.Transitions]):
         total_timesteps: Optional[int] = None,
         learn_kwargs: Optional[Mapping] = None,
     ) -> None:
-        """Trains the generator to maximize the discriminator loss.
-
-        After the end of training populates the generator replay buffer (used in
-        discriminator training) with `self.disc_batch_size` transitions.
-
-        Args:
-            total_timesteps: The number of transitions to sample from
-                `self.venv_train` during training. By default,
-                `self.gen_train_timesteps`.
-            learn_kwargs: kwargs for the Stable Baselines `RLModel.learn()`
-                method.
-        """
         if total_timesteps is None:
             total_timesteps = self.gen_train_timesteps
         if learn_kwargs is None:
@@ -269,21 +268,6 @@ class WGAN_AdversarialTrainer(base.DemonstrationAlgorithm[types.Transitions]):
         total_timesteps: int,
         callback: Optional[Callable[[int], None]] = None,
     ) -> None:
-        """Alternates between training the generator and discriminator.
-
-        Every "round" consists of a call to `train_gen(self.gen_train_timesteps)`,
-        a call to `train_disc`, and finally a call to `callback(round)`.
-
-        Training ends once an additional "round" would cause the number of transitions
-        sampled from the environment to exceed `total_timesteps`.
-
-        Args:
-            total_timesteps: An upper bound on the number of transitions to sample
-                from the environment during training.
-            callback: A function called at the end of every round which takes in a
-                single argument, the round number. Round numbers are in
-                `range(total_timesteps // self.gen_train_timesteps)`.
-        """
         n_rounds = total_timesteps // self.gen_train_timesteps
         assert n_rounds >= 1, (
             "No updates (need at least "
@@ -309,15 +293,6 @@ class WGAN_AdversarialTrainer(base.DemonstrationAlgorithm[types.Transitions]):
         obs_th: th.Tensor,
         acts_th: th.Tensor,
     ) -> Optional[th.Tensor]:
-        """Evaluates the given actions on the given observations.
-
-        Args:
-            obs_th: A batch of observations.
-            acts_th: A batch of actions.
-
-        Returns:
-            A batch of log policy action probabilities.
-        """
         if isinstance(self.policy, policies.ActorCriticPolicy):
             # policies.ActorCriticPolicy has a concrete implementation of
             # evaluate_actions to generate log_policy_act_prob given obs and actions.
@@ -350,21 +325,6 @@ class WGAN_AdversarialTrainer(base.DemonstrationAlgorithm[types.Transitions]):
         gen_samples: Optional[Mapping] = None,
         expert_samples: Optional[Mapping] = None,
     ) -> Mapping[str, th.Tensor]:
-        """Build and return training batch for the next discriminator update.
-
-        Args:
-            gen_samples: Same as in `train_disc`.
-            expert_samples: Same as in `train_disc`.
-
-        Returns:
-            The training batch: state, action, next state, dones, labels
-            and policy log-probabilities.
-
-        Raises:
-            RuntimeError: Empty generator replay buffer.
-            ValueError: `gen_samples` or `expert_samples` batch size is
-                different from `self.demo_batch_size`.
-        """
         if expert_samples is None:
             expert_samples = self._next_expert_batch()
 

@@ -55,7 +55,7 @@ class WGAIL(WGAN_AdversarialTrainer):
             **kwargs,
         )
 
-    def score_expert_is_high(
+    def score_expert_is_positive(
         self,
         state: th.Tensor,
         action: th.Tensor,

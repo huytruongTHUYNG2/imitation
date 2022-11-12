@@ -68,7 +68,7 @@ wgail_trainer = WGAIL(
     reward_net=reward_net,
 )
 
-wgail_trainer.train(300000)
+wgail_trainer.train(20000)
 rewards, _ = evaluate_policy(learner, venv, 100, return_episode_rewards=True)
 print("WGAIL Rewards:", rewards)
 
