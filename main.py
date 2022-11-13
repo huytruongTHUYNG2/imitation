@@ -18,10 +18,11 @@ import seals
 
 rng = np.random.default_rng(0)
 
+# make demonstrations by using a PPO expert ############################################################################
 env = gym.make("seals/CartPole-v0")
 expert = PPO(policy=MlpPolicy, env=env, n_steps=64, seed=2)
-expert.learn(1000)
-
+expert.learn(total_timesteps=1000)
+# this is the demonstrations
 rollouts = rollout.rollout(
     expert,
     make_vec_env(
@@ -33,6 +34,7 @@ rollouts = rollout.rollout(
     rng=rng,
 )
 
+# GAIL #################################################################################################################
 venv = make_vec_env("seals/CartPole-v0", n_envs=8)
 learner = PPO(env=venv, policy=MlpPolicy)
 reward_net = BasicRewardNet(
@@ -41,24 +43,7 @@ reward_net = BasicRewardNet(
     normalize_input_layer=RunningNorm,
 )
 
-# GAIL #################################################################################################################
-# gail_trainer = GAIL(
-#     demonstrations=rollouts,
-#     demo_batch_size=1024,
-#     gen_replay_buffer_capacity=2048,
-#     n_disc_updates_per_round=4,
-#     venv=venv,
-#     gen_algo=learner,
-#     reward_net=reward_net,
-# )
-#
-# gail_trainer.train(20000)
-# rewards, _ = evaluate_policy(learner, venv, 100, return_episode_rewards=True)
-# print("GAIL Rewards:", rewards)
-
-
-# WGAIL ################################################################################################################
-wgail_trainer = WGAIL(
+gail_trainer = GAIL(
     demonstrations=rollouts,
     demo_batch_size=1024,
     gen_replay_buffer_capacity=2048,
@@ -68,8 +53,34 @@ wgail_trainer = WGAIL(
     reward_net=reward_net,
 )
 
-wgail_trainer.train(20000)
-rewards, _ = evaluate_policy(learner, venv, 100, return_episode_rewards=True)
-print("WGAIL Rewards:", rewards)
+gail_trainer.train(total_timesteps=20000)
+gail_rewards, _ = evaluate_policy(learner, venv, 100, return_episode_rewards=True)
+
+
+# WGAIL ################################################################################################################
+venv = make_vec_env("seals/CartPole-v0", n_envs=8)
+learner = PPO(env=venv, policy=MlpPolicy)
+reward_net = BasicRewardNet(
+    venv.observation_space,
+    venv.action_space,
+    normalize_input_layer=RunningNorm,
+)
+
+wgail_trainer = WGAIL(
+    demonstrations=rollouts,
+    demo_batch_size=1024,
+    gen_replay_buffer_capacity=2048,
+    n_disc_updates_per_round=20,  # update critic 20 times per training round is best for WGAIL
+    venv=venv,
+    gen_algo=learner,
+    reward_net=reward_net,
+)
+
+wgail_trainer.train(total_timesteps=20000)
+wgail_rewards, _ = evaluate_policy(learner, venv, 100, return_episode_rewards=True)
+
+# comparison ###########################################################################################################
+print("GAIL Rewards:", gail_rewards)
+print("WGAIL Rewards:", wgail_rewards)
 
 

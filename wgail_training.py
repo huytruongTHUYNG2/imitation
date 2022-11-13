@@ -24,13 +24,8 @@ from imitation.util import logger, networks, util
 class WGAN_AdversarialTrainer(base.DemonstrationAlgorithm[types.Transitions]):
 
     venv: vec_env.VecEnv
-    """The original vectorized environment."""
 
     venv_train: vec_env.VecEnv
-    """Like `self.venv`, but wrapped with train reward unless in debug mode.
-
-    If `debug_use_ground_truth=True` was passed into the initializer then
-    `self.venv_train` is the same as `self.venv`."""
 
     def __init__(
         self,
@@ -40,7 +35,7 @@ class WGAN_AdversarialTrainer(base.DemonstrationAlgorithm[types.Transitions]):
         venv: vec_env.VecEnv,
         gen_algo: base_class.BaseAlgorithm,
         reward_net: reward_nets.RewardNet,
-        n_disc_updates_per_round: int = 2,
+        n_disc_updates_per_round: int = 5,  # default value in WGAN research paper
         log_dir: str = "output/",
         disc_opt_cls: Type[th.optim.Optimizer] = th.optim.Adam,
         disc_opt_kwargs: Optional[Mapping] = None,
@@ -161,33 +156,9 @@ class WGAN_AdversarialTrainer(base.DemonstrationAlgorithm[types.Transitions]):
         expert_samples: Optional[Mapping] = None,
         gen_samples: Optional[Mapping] = None,
     ) -> Optional[Mapping[str, float]]:
-        """Perform a single discriminator update, optionally using provided samples.
-
-        Args:
-            expert_samples: Transition samples from the expert in dictionary form.
-                If provided, must contain keys corresponding to every field of the
-                `Transitions` dataclass except "infos". All corresponding values can be
-                either NumPy arrays or Tensors. Extra keys are ignored. Must contain
-                `self.demo_batch_size` samples. If this argument is not provided, then
-                `self.demo_batch_size` expert samples from `self.demo_data_loader` are
-                used by default.
-            gen_samples: Transition samples from the generator policy in same dictionary
-                form as `expert_samples`. If provided, must contain exactly
-                `self.demo_batch_size` samples. If not provided, then take
-                `len(expert_samples)` samples from the generator replay buffer.
-
-        Returns:
-            Statistics for discriminator (e.g. loss, accuracy).
-        """
         with self.logger.accumulate_means("disc"):
             # optionally write TB summaries for collected ops
             write_summaries = self._init_tensorboard and self._global_step % 20 == 0
-
-            # TODO: parameter clipping for discriminator
-            # clamp discriminator parameters to a range [-c, c] to avoid weight explosion
-            # c = 0.01
-            # for p in self._reward_net.parameters():
-            #     p.data.clamp_(-c, c)
 
             # compute loss
             batch = self._make_disc_train_batch(
@@ -201,16 +172,10 @@ class WGAN_AdversarialTrainer(base.DemonstrationAlgorithm[types.Transitions]):
                 batch["done"],
                 batch["log_policy_act_prob"],
             )
-            import warnings
-            warnings.warn(f"Discriminator score: {disc_score}\n"
-                          f"First part should be positive, last part should be negative.")
             # flip sign because loss minimization
             grad = -batch["score_expert_is_positive"].float()
 
             loss = disc_score
-
-            # TODO: generator loss change
-            # TODO: gradient penalty
 
             # do gradient step
             self._disc_opt.zero_grad()
@@ -222,6 +187,11 @@ class WGAN_AdversarialTrainer(base.DemonstrationAlgorithm[types.Transitions]):
             loss[ind:].backward(gradient=grad[ind:])
             self._disc_opt.step()
             self._disc_step += 1
+
+            # clamp discriminator parameters to a range [-c, c] for stability
+            c = 0.01  # default value in WGAN research paper
+            for p in self._reward_net.parameters():
+                p.data.clamp_(-c, c)
 
             # compute/write stats and TensorBoard data
             with th.no_grad():
