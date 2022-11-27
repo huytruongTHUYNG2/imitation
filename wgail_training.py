@@ -175,16 +175,32 @@ class WGAN_AdversarialTrainer(base.DemonstrationAlgorithm[types.Transitions]):
             # flip sign because loss minimization
             grad = -batch["score_expert_is_positive"].float()
 
+            # find the dividing index between expert data and learner data
+            ind = int(disc_score.shape[0] / 2)
+            # perform brute-force linear-interpolation of real and generated data
+            eps = torch.rand(ind, 1)
+            mix_state = eps * batch["state"][:ind] + (1 - eps) * batch["state"][ind:]
+            mix_action = eps * batch["action"][:ind] + (1 - eps) * batch["action"][ind:]
+            mix_next_state = eps * batch["next_state"][:ind] + (1 - eps) * batch["next_state"][ind:]
+            mix_done = eps * batch["done"][:ind] + (1 - eps) * batch["done"][ind:]
+
+            # create the losses for back-propagation
             loss = disc_score
+            gradient_penalty_loss = self.score_expert_is_positive(
+                mix_state,
+                mix_action,
+                mix_next_state,
+                mix_done
+            )
 
             # do gradient step
             self._disc_opt.zero_grad()
-            # find the dividing index between expert data and learner data
-            ind = int(loss.shape[0] / 2)
             # loss for expert data
             loss[:ind].backward(gradient=grad[:ind], retain_graph=True)
             # loss for learner data
-            loss[ind:].backward(gradient=grad[ind:])
+            loss[ind:].backward(gradient=grad[ind:], retain_graph=True)
+            # loss for mixed data is treated like fake data
+            gradient_penalty_loss.backward(gradient=grad[ind:])
             self._disc_opt.step()
             self._disc_step += 1
 
