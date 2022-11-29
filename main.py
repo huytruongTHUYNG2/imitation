@@ -53,7 +53,7 @@ gail_trainer = GAIL(
     reward_net=reward_net,
 )
 
-gail_trainer.train(total_timesteps=50_000)
+gail_trainer.train(total_timesteps=20_000)
 gail_rewards, _ = evaluate_policy(learner, venv, 100, return_episode_rewards=True)
 
 
@@ -76,7 +76,7 @@ wgail_trainer = WGAIL(
     reward_net=reward_net,
 )
 
-wgail_trainer.train(total_timesteps=50_000)
+wgail_trainer.train(total_timesteps=20_000)
 wgail_rewards, _ = evaluate_policy(learner, venv, 100, return_episode_rewards=True)
 
 # comparison ###########################################################################################################

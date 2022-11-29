@@ -122,11 +122,8 @@ class WGAN_AdversarialTrainer(base.DemonstrationAlgorithm[types.Transitions]):
     @abc.abstractmethod
     def score_expert_is_positive(
         self,
-        state: th.Tensor,
-        action: th.Tensor,
-        next_state: th.Tensor,
-        done: th.Tensor,
-        log_policy_act_prob: Optional[th.Tensor] = None,
+        state_action_next_state_done: th.Tensor,
+        padding: tuple
     ) -> th.Tensor:
         """ Returns the score for expert trajectories and score for policy trajectories """
 
@@ -165,13 +162,19 @@ class WGAN_AdversarialTrainer(base.DemonstrationAlgorithm[types.Transitions]):
                 gen_samples=gen_samples,
                 expert_samples=expert_samples,
             )
-            disc_score = self.score_expert_is_positive(
-                batch["state"],
-                batch["action"],
-                batch["next_state"],
-                batch["done"],
-                batch["log_policy_act_prob"],
-            )
+
+            s, a, ns, d = batch["state"], batch["action"], batch["next_state"], batch["done"]
+
+            d = d[:, None]  # add extra dimension so we can pad the 2nd dimension
+            max_pad = max(s.shape[1], a.shape[1], ns.shape[1], d.shape[1])
+            pad = (max_pad - s.shape[1], max_pad - a.shape[1], max_pad - ns.shape[1], max_pad - d.shape[1])
+
+            s = F.pad(s, (0, pad[0]))
+            a = F.pad(a, (0, pad[1]))
+            ns = F.pad(ns, (0, pad[2]))
+            d = F.pad(d, (0, pad[3]))
+
+            disc_score = self.score_expert_is_positive(torch.vstack((s, a, ns, d)), pad)
             # flip sign because loss minimization
             grad = -batch["score_expert_is_positive"].float()
 
@@ -179,19 +182,28 @@ class WGAN_AdversarialTrainer(base.DemonstrationAlgorithm[types.Transitions]):
             ind = int(disc_score.shape[0] / 2)
             # perform brute-force linear-interpolation of real and generated data
             eps = torch.rand(ind, 1)
-            mix_state = eps * batch["state"][:ind] + (1 - eps) * batch["state"][ind:]
-            mix_action = eps * batch["action"][:ind] + (1 - eps) * batch["action"][ind:]
-            mix_next_state = eps * batch["next_state"][:ind] + (1 - eps) * batch["next_state"][ind:]
-            mix_done = eps * batch["done"][:ind] + (1 - eps) * batch["done"][ind:]
+            mix_s = eps * s[:ind] + (1 - eps) * s[ind:]
+            mix_a = eps * a[:ind] + (1 - eps) * a[ind:]
+            mix_ns = eps * ns[:ind] + (1 - eps) * ns[ind:]
+            mix_d = eps * d[:ind] + (1 - eps) * d[ind:]
+            # the mixed inputs are still valid padded
+            mix_inp = torch.tensor(torch.vstack((mix_s, mix_a, mix_ns, mix_d)), requires_grad=True)
 
             # create the losses for back-propagation
             loss = disc_score
-            gradient_penalty_loss = self.score_expert_is_positive(
-                mix_state,
-                mix_action,
-                mix_next_state,
-                mix_done
-            )
+            disc_score_mix = self.score_expert_is_positive(mix_inp, pad)
+
+            gradients = torch.autograd.grad(
+                outputs=disc_score_mix,
+                inputs=mix_inp,
+                grad_outputs=torch.ones_like(disc_score_mix),
+                create_graph=True,
+                retain_graph=True,
+            )[0]
+            mix_batch_dim = disc_score_mix.shape[0]
+            gradients = gradients.view(mix_batch_dim, -1)
+            grad_norm = gradients.norm(2, 1)
+            gradient_penalty_loss = torch.mean((grad_norm - 1) ** 2)
 
             # do gradient step
             self._disc_opt.zero_grad()
@@ -199,8 +211,9 @@ class WGAN_AdversarialTrainer(base.DemonstrationAlgorithm[types.Transitions]):
             loss[:ind].backward(gradient=grad[:ind], retain_graph=True)
             # loss for learner data
             loss[ind:].backward(gradient=grad[ind:], retain_graph=True)
-            # loss for mixed data is treated like fake data
-            gradient_penalty_loss.backward(gradient=grad[ind:])
+            # gradient penalty loss
+            gradient_penalty_loss.backward()
+
             self._disc_opt.step()
             self._disc_step += 1
 

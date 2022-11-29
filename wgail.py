@@ -57,13 +57,23 @@ class WGAIL(WGAN_AdversarialTrainer):
 
     def score_expert_is_positive(
         self,
-        state: th.Tensor,
-        action: th.Tensor,
-        next_state: th.Tensor,
-        done: th.Tensor,
-        log_policy_act_prob: Optional[th.Tensor] = None,
+        state_action_next_state_done: th.Tensor,
+        padding: tuple
     ) -> th.Tensor:
-        del log_policy_act_prob
+        # partition state_action_next_state_done
+        batch_dim = int(state_action_next_state_done.shape[0] / 4)
+        state = state_action_next_state_done[:batch_dim]
+        action = state_action_next_state_done[batch_dim:batch_dim*2]
+        next_state = state_action_next_state_done[batch_dim*2:batch_dim*3]
+        done = state_action_next_state_done[batch_dim*3:batch_dim*4]
+        # remove padding
+        assert state.shape[1] == action.shape[1] == next_state.shape[1] == done.shape[1]
+        max_pad = state.shape[1]
+        state = state[:, :max_pad - padding[0]]
+        action = action[:, :max_pad - padding[1]]
+        next_state = next_state[:, :max_pad - padding[2]]
+        done = done[:, :max_pad - padding[3]]
+        # get score
         score = self._reward_net(state, action, next_state, done)
         assert score.shape == state.shape[:1]
         return score
