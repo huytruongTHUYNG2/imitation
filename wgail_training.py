@@ -164,19 +164,19 @@ class WGAN_AdversarialTrainer(base.DemonstrationAlgorithm[types.Transitions]):
             )
 
             s, a, ns, d = batch["state"], batch["action"], batch["next_state"], batch["done"]
+            # flip sign because loss minimization
+            grad = -batch["score_expert_is_positive"].float()
 
             d = d[:, None]  # add extra dimension so we can pad the 2nd dimension
             max_pad = max(s.shape[1], a.shape[1], ns.shape[1], d.shape[1])
             pad = (max_pad - s.shape[1], max_pad - a.shape[1], max_pad - ns.shape[1], max_pad - d.shape[1])
-
+            # add padding so we can stack
             s = F.pad(s, (0, pad[0]))
             a = F.pad(a, (0, pad[1]))
             ns = F.pad(ns, (0, pad[2]))
             d = F.pad(d, (0, pad[3]))
-
+            # get score
             disc_score = self.score_expert_is_positive(torch.vstack((s, a, ns, d)), pad)
-            # flip sign because loss minimization
-            grad = -batch["score_expert_is_positive"].float()
 
             # find the dividing index between expert data and learner data
             ind = int(disc_score.shape[0] / 2)
@@ -188,29 +188,30 @@ class WGAN_AdversarialTrainer(base.DemonstrationAlgorithm[types.Transitions]):
             mix_d = eps * d[:ind] + (1 - eps) * d[ind:]
             # the mixed inputs are still valid padded
             mix_inp = torch.tensor(torch.vstack((mix_s, mix_a, mix_ns, mix_d)), requires_grad=True)
-
-            # create the losses for back-propagation
-            loss = disc_score
+            # get score
             disc_score_mix = self.score_expert_is_positive(mix_inp, pad)
 
-            gradients = torch.autograd.grad(
-                outputs=disc_score_mix,
-                inputs=mix_inp,
-                grad_outputs=torch.ones_like(disc_score_mix),
-                create_graph=True,
-                retain_graph=True,
-            )[0]
-            mix_batch_dim = disc_score_mix.shape[0]
-            gradients = gradients.view(mix_batch_dim, -1)
-            grad_norm = gradients.norm(2, 1)
-            gradient_penalty_loss = torch.mean((grad_norm - 1) ** 2)
+            # create the losses for back-propagation
+            normal_loss = disc_score
+            gradient_penalty_loss = torch.mean(
+                (torch.autograd.grad(
+                    outputs=disc_score_mix,
+                    inputs=mix_inp,
+                    grad_outputs=torch.ones_like(disc_score_mix),
+                    create_graph=True,
+                    retain_graph=True
+                )[0]
+                 .view(disc_score_mix.shape[0], -1)
+                 .norm(2, 1) - 1
+                ) ** 2
+            )
 
             # do gradient step
             self._disc_opt.zero_grad()
             # loss for expert data
-            loss[:ind].backward(gradient=grad[:ind], retain_graph=True)
+            normal_loss[:ind].backward(gradient=grad[:ind], retain_graph=True)
             # loss for learner data
-            loss[ind:].backward(gradient=grad[ind:], retain_graph=True)
+            normal_loss[ind:].backward(gradient=grad[ind:], retain_graph=True)
             # gradient penalty loss
             gradient_penalty_loss.backward()
 
@@ -227,7 +228,7 @@ class WGAN_AdversarialTrainer(base.DemonstrationAlgorithm[types.Transitions]):
                 train_stats = compute_train_stats(
                     disc_score,
                     batch["score_expert_is_positive"],
-                    loss,
+                    normal_loss,
                 )
             self.logger.record("global_step", self._global_step)
             for k, v in train_stats.items():
